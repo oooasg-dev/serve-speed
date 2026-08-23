@@ -31,7 +31,7 @@
       align-items: center;
       background: #000;
     }
-    video {
+    video#webcam {
       position: absolute;
       width: 100%;
       height: 100%;
@@ -115,7 +115,7 @@
       display: flex;
       gap: 6px;
     }
-    button.main-btn {
+    button.main-btn, label.main-btn {
       background: #2563eb;
       color: white;
       border: none;
@@ -124,16 +124,14 @@
       font-weight: 600;
       border-radius: 8px;
       cursor: pointer;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
     }
-    button#auto-btn {
-      background: #8b5cf6;
-    }
-    button#zoom-btn {
-      background: #4b5563;
-    }
-    button#rec-btn {
-      background: #ef4444;
-    }
+    button#auto-btn { background: #8b5cf6; }
+    button#zoom-btn { background: #4b5563; }
+    label#file-label { background: #059669; }
+    button#rec-btn { background: #ef4444; }
     button#rec-btn.recording {
       background: #22c55e;
       animation: pulse 1.5s infinite;
@@ -147,6 +145,73 @@
       font-size: 12px;
       color: #e5e7eb;
       line-height: 1.3;
+    }
+
+    /* Модальное окно покадровой корректировки */
+    #review-modal {
+      position: absolute;
+      inset: 0;
+      background: rgba(0, 0, 0, 0.92);
+      z-index: 50;
+      display: none;
+      flex-direction: column;
+      justify-content: space-between;
+      padding: max(16px, env(safe-area-inset-top)) max(16px, env(safe-area-inset-right)) max(16px, env(safe-area-inset-bottom)) max(16px, env(safe-area-inset-left));
+    }
+    .review-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      font-size: 16px;
+      font-weight: bold;
+    }
+    .review-video-container {
+      position: relative;
+      flex: 1;
+      display: flex;
+      justify-content: center;
+      align-items: center;
+      margin: 10px 0;
+      overflow: hidden;
+    }
+    #review-video {
+      max-width: 100%;
+      max-height: 100%;
+      object-fit: contain;
+    }
+    .review-controls {
+      background: rgba(255, 255, 255, 0.1);
+      padding: 12px;
+      border-radius: 12px;
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+    }
+    .slider-row {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+    .slider-row input[type=range] {
+      flex: 1;
+    }
+    .step-btn-group {
+      display: flex;
+      justify-content: space-between;
+      gap: 10px;
+    }
+    .step-btn {
+      flex: 1;
+      background: rgba(255, 255, 255, 0.2);
+      border: 1px solid rgba(255, 255, 255, 0.3);
+      color: white;
+      padding: 10px;
+      border-radius: 8px;
+      font-size: 14px;
+      font-weight: 600;
+    }
+    .confirm-btn {
+      background: #22c55e !important;
     }
   </style>
 </head>
@@ -175,10 +240,37 @@
     <div class="controls-overlay">
       <div id="status">Камера: загрузка...<br>FPS: --</div>
       <div class="btn-group">
+        <label id="file-label" class="main-btn">
+          Файл
+          <input type="file" id="file-input" accept="video/*" style="display:none;">
+        </label>
         <button class="main-btn" id="auto-btn">Авто</button>
         <button class="main-btn" id="zoom-btn">Zoom 1x</button>
         <button class="main-btn" id="save-btn">Сохранить</button>
         <button class="main-btn" id="rec-btn">Запись</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Модальное окно полуавтоматической проверки кадров -->
+  <div id="review-modal">
+    <div class="review-header">
+      <span id="step-title">Шаг 1: Выберите кадр УДАРА (Старт)</span>
+      <span id="frame-info">Кадр: 0</span>
+    </div>
+
+    <div class="review-video-container">
+      <video id="review-video" playsinline muted></video>
+    </div>
+
+    <div class="review-controls">
+      <div class="slider-row">
+        <input type="range" id="frame-slider" min="0" max="100" value="0" step="1">
+      </div>
+      <div class="step-btn-group">
+        <button class="step-btn" id="btn-prev-frame">◄ -1 кадр</button>
+        <button class="step-btn" id="btn-next-frame">+1 кадр ►</button>
+        <button class="step-btn confirm-btn" id="btn-confirm-step">Далее (Финиш) ►</button>
       </div>
     </div>
   </div>
@@ -198,7 +290,18 @@
     const autoBtn = document.getElementById('auto-btn');
     const recBtn = document.getElementById('rec-btn');
     const zoomBtn = document.getElementById('zoom-btn');
+    const fileInput = document.getElementById('file-input');
     const activePtLabel = document.getElementById('active-pt-label');
+
+    // Элементы модального окна проверки
+    const reviewModal = document.getElementById('review-modal');
+    const reviewVideo = document.getElementById('review-video');
+    const stepTitle = document.getElementById('step-title');
+    const frameInfo = document.getElementById('frame-info');
+    const frameSlider = document.getElementById('frame-slider');
+    const btnPrevFrame = document.getElementById('btn-prev-frame');
+    const btnNextFrame = document.getElementById('btn-next-frame');
+    const btnConfirmStep = document.getElementById('btn-confirm-step');
 
     let videoTrack = null;
     let zoomLevels = [1, 2, 3];
@@ -219,11 +322,11 @@
     let mediaRecorder = null;
     let recordedChunks = [];
     let isRecording = false;
-    let recStartTime = 0;
 
-    let frameCount = 0;
-    let lastFpsTime = performance.now();
-    let currentFps = 60;
+    let currentStep = 1; // 1 = Старт, 2 = Финиш
+    let startFrameTime = 0;
+    let endFrameTime = 0;
+    const fps = 60; // Стандартная частота разбора видео
 
     async function startCamera() {
       try {
@@ -241,48 +344,120 @@
 
         mediaRecorder = new MediaRecorder(stream, { mimeType: 'video/mp4' });
         mediaRecorder.ondataavailable = (e) => { if (e.data.size > 0) recordedChunks.push(e.data); };
-        mediaRecorder.onstop = processRecordedVideo;
+        mediaRecorder.onstop = () => {
+          const blob = new Blob(recordedChunks, { type: 'video/mp4' });
+          openReviewModal(URL.createObjectURL(blob));
+        };
 
       } catch (err) {
         statusEl.innerHTML = "Ошибка: " + err.message;
       }
     }
 
-    // Авто-определение границ сине-голубого покрытия
+    // Загрузка локального файла видео
+    fileInput.addEventListener('change', (e) => {
+      const file = e.target.files[0];
+      if (file) {
+        const fileURL = URL.createObjectURL(file);
+        openReviewModal(fileURL);
+      }
+    });
+
+    // Открытие интерфейса проверки
+    function openReviewModal(videoSrc) {
+      reviewVideo.src = videoSrc;
+      reviewModal.style.display = 'flex';
+      currentStep = 1;
+      stepTitle.innerText = "Шаг 1: Подтвердите кадр УДАРА (Старт)";
+      btnConfirmStep.innerText = "Далее (К финишу) ►";
+
+      reviewVideo.onloadedmetadata = () => {
+        frameSlider.max = Math.floor(reviewVideo.duration * fps);
+        // Автоматом выставляем предположительный старт (30% от видео) и финиш (70%)
+        frameSlider.value = Math.floor(frameSlider.max * 0.3);
+        updateVideoFrame();
+      };
+    }
+
+    function updateVideoFrame() {
+      const frameNum = parseInt(frameSlider.value);
+      reviewVideo.currentTime = frameNum / fps;
+      frameInfo.innerText = `Кадр: ${frameNum} / ${frameSlider.max} (${reviewVideo.currentTime.toFixed(2)}с)`;
+    }
+
+    frameSlider.addEventListener('input', updateVideoFrame);
+
+    btnPrevFrame.addEventListener('click', () => {
+      if (frameSlider.value > 0) {
+        frameSlider.value = parseInt(frameSlider.value) - 1;
+        updateVideoFrame();
+      }
+    });
+
+    btnNextFrame.addEventListener('click', () => {
+      if (parseInt(frameSlider.value) < parseInt(frameSlider.max)) {
+        frameSlider.value = parseInt(frameSlider.value) + 1;
+        updateVideoFrame();
+      }
+    });
+
+    // Переключение между шагами подтверждения
+    btnConfirmStep.addEventListener('click', () => {
+      if (currentStep === 1) {
+        startFrameTime = reviewVideo.currentTime;
+        currentStep = 2;
+        stepTitle.innerText = "Шаг 2: Подтвердите кадр ПРИЕМА (Финиш)";
+        btnConfirmStep.innerText = "Рассчитать скорость ★";
+        
+        // Сдвигаем бегунок ближе к предполагаемому концу
+        frameSlider.value = Math.floor(frameSlider.max * 0.7);
+        updateVideoFrame();
+      } else {
+        endFrameTime = reviewVideo.currentTime;
+        calculateBallSpeed();
+      }
+    });
+
+    function calculateBallSpeed() {
+      const duration = Math.abs(endFrameTime - startFrameTime);
+      reviewModal.style.display = 'none';
+
+      if (duration === 0) {
+        statusEl.innerHTML = "Ошибка: Время старта и финиша совпадает!";
+        return;
+      }
+
+      // Базовый расчет расстояния (стандартная длина волейбольной площадки 18м)
+      const distanceMeters = 18.0; 
+      const speedMPS = distanceMeters / duration;
+      const speedKMH = (speedMPS * 3.6).toFixed(1);
+
+      statusEl.innerHTML = `Скорость подачи: <b style="color:#22c55e; font-size:14px;">${speedKMH} км/ч</b><br>Время полёта: ${duration.toFixed(2)} сек.`;
+    }
+
+    // Авто-определение площадки
     autoBtn.addEventListener('click', () => {
       if (!video.videoWidth || !video.videoHeight) return;
 
       const tempCanvas = document.createElement('canvas');
-      const sampleW = 320;
-      const sampleH = 180;
-      tempCanvas.width = sampleW;
-      tempCanvas.height = sampleH;
+      const sampleW = 320, sampleH = 180;
+      tempCanvas.width = sampleW; tempCanvas.height = sampleH;
       const tempCtx = tempCanvas.getContext('2d');
       tempCtx.drawImage(video, 0, 0, sampleW, sampleH);
 
-      const imgData = tempCtx.getImageData(0, 0, sampleW, sampleH);
-      const data = imgData.data;
-
-      let minSum = Infinity, maxSum = -Infinity;
-      let minDiff = Infinity, maxDiff = -Infinity;
-      let topL = {x: 0.2, y: 0.3}, topR = {x: 0.8, y: 0.3};
-      let botR = {x: 0.8, y: 0.8}, botL = {x: 0.2, y: 0.8};
-
+      const data = tempCtx.getImageData(0, 0, sampleW, sampleH).data;
+      let minSum = Infinity, maxSum = -Infinity, minDiff = Infinity, maxDiff = -Infinity;
+      let topL = {x: 0.2, y: 0.3}, topR = {x: 0.8, y: 0.3}, botR = {x: 0.8, y: 0.8}, botL = {x: 0.2, y: 0.8};
       let found = false;
 
       for (let y = 0; y < sampleH; y++) {
         for (let x = 0; x < sampleW; x++) {
           const idx = (y * sampleW + x) * 4;
-          const r = data[idx];
-          const g = data[idx + 1];
-          const b = data[idx + 2];
+          const r = data[idx], g = data[idx + 1], b = data[idx + 2];
 
-          // Фильтр синего/голубого цвета покрытия
           if (b > 80 && b > r * 1.2 && g > r * 0.9) {
             found = true;
-            const sum = x + y;
-            const diff = x - y;
-
+            const sum = x + y, diff = x - y;
             if (sum < minSum) { minSum = sum; topL = { x: x / sampleW, y: y / sampleH }; }
             if (sum > maxSum) { maxSum = sum; botR = { x: x / sampleW, y: y / sampleH }; }
             if (diff > maxDiff) { maxDiff = diff; topR = { x: x / sampleW, y: y / sampleH }; }
@@ -294,7 +469,7 @@
       if (found) {
         points = [topL, topR, botR, botL];
         activePointIndex = 0;
-        statusEl.innerHTML = "Площадка распознана!<br>Подправьте при необходимости.";
+        statusEl.innerHTML = "Площадка распознана!<br>Подправьте точки при необходимости.";
       } else {
         statusEl.innerHTML = "Синее покрытие не найдено.<br>Настройте вручную.";
       }
@@ -350,18 +525,6 @@
     function draw() {
       ctx.clearRect(0, 0, canvas.width, canvas.height);
 
-      frameCount++;
-      const now = performance.now();
-      if (now - lastFpsTime >= 1000) {
-        currentFps = Math.round((frameCount * 1000) / (now - lastFpsTime));
-        frameCount = 0;
-        lastFpsTime = now;
-        if (!isRecording) {
-          const ptStatus = activePointIndex !== -1 ? ` | Точка: T${activePointIndex + 1}` : ' | Калибровка готова';
-          statusEl.innerHTML = `Камера готова<br>FPS: ${currentFps}${ptStatus}`;
-        }
-      }
-
       if (points.length === 4) {
         ctx.beginPath();
         ctx.moveTo(points[0].x * canvas.width, points[0].y * canvas.height);
@@ -406,15 +569,12 @@
 
     function drawMagnifier(point) {
       magBox.style.display = 'block';
-      
       const px = point.x * canvas.width;
       const py = point.y * canvas.height;
 
       magCtx.clearRect(0, 0, 120, 120);
-      
       const zoom = 4;
-      const sw = 120 / zoom;
-      const sh = 120 / zoom;
+      const sw = 120 / zoom, sh = 120 / zoom;
       const sx = (px * (video.videoWidth / canvas.width)) - sw / 2;
       const sy = (py * (video.videoHeight / canvas.height)) - sh / 2;
 
@@ -431,18 +591,13 @@
     function triggerTempMagnifier() {
       showMagnifierTemp = true;
       clearTimeout(magHideTimeout);
-      magHideTimeout = setTimeout(() => {
-        showMagnifierTemp = false;
-      }, 1500);
+      magHideTimeout = setTimeout(() => { showMagnifierTemp = false; }, 1500);
     }
 
     function moveActivePoint(dxPixels, dyPixels) {
       if (activePointIndex === -1) return;
-      const stepX = dxPixels / canvas.width;
-      const stepY = dyPixels / canvas.height;
-
-      points[activePointIndex].x = Math.max(0, Math.min(1, points[activePointIndex].x + stepX));
-      points[activePointIndex].y = Math.max(0, Math.min(1, points[activePointIndex].y + stepY));
+      points[activePointIndex].x = Math.max(0, Math.min(1, points[activePointIndex].x + (dxPixels / canvas.width)));
+      points[activePointIndex].y = Math.max(0, Math.min(1, points[activePointIndex].y + (dyPixels / canvas.height)));
       triggerTempMagnifier();
     }
 
@@ -452,8 +607,7 @@
     document.getElementById('btn-right').addEventListener('click', () => moveActivePoint(1, 0));
 
     activePtLabel.addEventListener('click', () => {
-      if (activePointIndex === -1) activePointIndex = 0;
-      else activePointIndex = (activePointIndex + 1) % 4;
+      activePointIndex = activePointIndex === -1 ? 0 : (activePointIndex + 1) % 4;
       activePtLabel.innerText = `T${activePointIndex + 1}`;
       triggerTempMagnifier();
     });
@@ -491,27 +645,22 @@
       points[activePointIndex].y = Math.max(0, Math.min(1, pos.y));
     }
 
-    function handleEnd() {
-      isDragging = false;
-    }
-
     canvas.addEventListener('mousedown', handleStart);
     window.addEventListener('mousemove', handleMove);
-    window.addEventListener('mouseup', handleEnd);
+    window.addEventListener('mouseup', () => isDragging = false);
 
     canvas.addEventListener('touchstart', handleStart);
     canvas.addEventListener('touchmove', handleMove);
-    canvas.addEventListener('touchend', handleEnd);
+    canvas.addEventListener('touchend', () => isDragging = false);
 
     recBtn.addEventListener('click', () => {
       if (!isRecording) {
         recordedChunks = [];
         mediaRecorder.start();
         isRecording = true;
-        recStartTime = performance.now();
         recBtn.innerText = "Стоп";
         recBtn.classList.add('recording');
-        statusEl.innerHTML = "Запись подачи...<br>Нажмите Стоп после приема";
+        statusEl.innerHTML = "Запись подачи...";
       } else {
         mediaRecorder.stop();
         isRecording = false;
@@ -520,30 +669,20 @@
       }
     });
 
-    function processRecordedVideo() {
-      const duration = ((performance.now() - recStartTime) / 1000).toFixed(1);
-      statusEl.innerHTML = `Записано: ${duration} сек.<br>Готово к расчету!`;
-    }
-
     saveBtn.addEventListener('click', () => {
       localStorage.setItem('court_calibration_points', JSON.stringify(points));
       activePointIndex = -1;
       showMagnifierTemp = false;
       statusEl.innerHTML = "Калибровка сохранена!";
-      setTimeout(() => statusEl.innerHTML = `Камера готова<br>FPS: ${currentFps} | Калибровка готова`, 2000);
     });
 
     const saved = localStorage.getItem('court_calibration_points');
     if (saved) {
-      try { 
-        points = JSON.parse(saved); 
-        activePointIndex = -1;
-      } catch (e) {}
+      try { points = JSON.parse(saved); activePointIndex = -1; } catch (e) {}
     }
 
     video.addEventListener('loadedmetadata', alignCanvasWithVideo);
     window.addEventListener('resize', alignCanvasWithVideo);
-    window.addEventListener('orientationchange', () => setTimeout(alignCanvasWithVideo, 300));
 
     startCamera();
   </script>
