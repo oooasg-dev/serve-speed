@@ -42,7 +42,6 @@
       touch-action: none;
       z-index: 10;
     }
-    /* Виджет Лупы (скрыт по умолчанию) */
     #magnifier {
       position: absolute;
       top: 16px;
@@ -52,7 +51,7 @@
       border-radius: 50%;
       border: 3px solid #3b82f6;
       box-shadow: 0 4px 15px rgba(0,0,0,0.6);
-      display: none; /* Скрываем по умолчанию */
+      display: none;
       pointer-events: none;
       z-index: 30;
       background: #000;
@@ -62,12 +61,11 @@
       width: 100%;
       height: 100%;
     }
-    /* Джойстик точной подстройки */
     .dpad-container {
       position: absolute;
       top: max(16px, env(safe-area-inset-top));
       right: max(16px, env(safe-area-inset-right));
-      display: grid;
+      display: none;
       grid-template-columns: repeat(3, 40px);
       grid-template-rows: repeat(3, 40px);
       gap: 4px;
@@ -97,7 +95,6 @@
       font-weight: bold;
       background: rgba(37, 99, 235, 0.8);
     }
-    /* Нижняя панель */
     .controls-overlay {
       position: absolute;
       bottom: max(16px, env(safe-area-inset-bottom));
@@ -116,7 +113,7 @@
     }
     .btn-group {
       display: flex;
-      gap: 8px;
+      gap: 6px;
     }
     button.main-btn {
       background: #2563eb;
@@ -127,6 +124,9 @@
       font-weight: 600;
       border-radius: 8px;
       cursor: pointer;
+    }
+    button#auto-btn {
+      background: #8b5cf6;
     }
     button#zoom-btn {
       background: #4b5563;
@@ -156,13 +156,11 @@
     <video id="webcam" autoplay playsinline muted></video>
     <canvas id="overlay"></canvas>
     
-    <!-- Виджет Лупы -->
     <div id="magnifier">
       <canvas id="magnifier-canvas" width="120" height="120"></canvas>
     </div>
 
-    <!-- Джойстик в правом верхнем углу -->
-    <div class="dpad-container">
+    <div class="dpad-container" id="dpad">
       <div></div>
       <div class="dpad-btn" id="btn-up">▲</div>
       <div></div>
@@ -177,6 +175,7 @@
     <div class="controls-overlay">
       <div id="status">Камера: загрузка...<br>FPS: --</div>
       <div class="btn-group">
+        <button class="main-btn" id="auto-btn">Авто</button>
         <button class="main-btn" id="zoom-btn">Zoom 1x</button>
         <button class="main-btn" id="save-btn">Сохранить</button>
         <button class="main-btn" id="rec-btn">Запись</button>
@@ -192,9 +191,11 @@
     const magBox = document.getElementById('magnifier');
     const magCanvas = document.getElementById('magnifier-canvas');
     const magCtx = magCanvas.getContext('2d');
+    const dpadEl = document.getElementById('dpad');
 
     const statusEl = document.getElementById('status');
     const saveBtn = document.getElementById('save-btn');
+    const autoBtn = document.getElementById('auto-btn');
     const recBtn = document.getElementById('rec-btn');
     const zoomBtn = document.getElementById('zoom-btn');
     const activePtLabel = document.getElementById('active-pt-label');
@@ -210,7 +211,7 @@
       { x: 0.2, y: 0.7 }
     ];
 
-    let activePointIndex = 0;
+    let activePointIndex = -1;
     let isDragging = false;
     let showMagnifierTemp = false;
     let magHideTimeout = null;
@@ -246,6 +247,58 @@
         statusEl.innerHTML = "Ошибка: " + err.message;
       }
     }
+
+    // Авто-определение границ сине-голубого покрытия
+    autoBtn.addEventListener('click', () => {
+      if (!video.videoWidth || !video.videoHeight) return;
+
+      const tempCanvas = document.createElement('canvas');
+      const sampleW = 320;
+      const sampleH = 180;
+      tempCanvas.width = sampleW;
+      tempCanvas.height = sampleH;
+      const tempCtx = tempCanvas.getContext('2d');
+      tempCtx.drawImage(video, 0, 0, sampleW, sampleH);
+
+      const imgData = tempCtx.getImageData(0, 0, sampleW, sampleH);
+      const data = imgData.data;
+
+      let minSum = Infinity, maxSum = -Infinity;
+      let minDiff = Infinity, maxDiff = -Infinity;
+      let topL = {x: 0.2, y: 0.3}, topR = {x: 0.8, y: 0.3};
+      let botR = {x: 0.8, y: 0.8}, botL = {x: 0.2, y: 0.8};
+
+      let found = false;
+
+      for (let y = 0; y < sampleH; y++) {
+        for (let x = 0; x < sampleW; x++) {
+          const idx = (y * sampleW + x) * 4;
+          const r = data[idx];
+          const g = data[idx + 1];
+          const b = data[idx + 2];
+
+          // Фильтр синего/голубого цвета покрытия
+          if (b > 80 && b > r * 1.2 && g > r * 0.9) {
+            found = true;
+            const sum = x + y;
+            const diff = x - y;
+
+            if (sum < minSum) { minSum = sum; topL = { x: x / sampleW, y: y / sampleH }; }
+            if (sum > maxSum) { maxSum = sum; botR = { x: x / sampleW, y: y / sampleH }; }
+            if (diff > maxDiff) { maxDiff = diff; topR = { x: x / sampleW, y: y / sampleH }; }
+            if (diff < minDiff) { minDiff = diff; botL = { x: x / sampleW, y: y / sampleH }; }
+          }
+        }
+      }
+
+      if (found) {
+        points = [topL, topR, botR, botL];
+        activePointIndex = 0;
+        statusEl.innerHTML = "Площадка распознана!<br>Подправьте при необходимости.";
+      } else {
+        statusEl.innerHTML = "Синее покрытие не найдено.<br>Настройте вручную.";
+      }
+    });
 
     zoomBtn.addEventListener('click', async () => {
       currentZoomIndex = (currentZoomIndex + 1) % zoomLevels.length;
@@ -304,11 +357,11 @@
         frameCount = 0;
         lastFpsTime = now;
         if (!isRecording) {
-          statusEl.innerHTML = `Камера готова<br>FPS: ${currentFps} | Точка: T${activePointIndex + 1}`;
+          const ptStatus = activePointIndex !== -1 ? ` | Точка: T${activePointIndex + 1}` : ' | Калибровка готова';
+          statusEl.innerHTML = `Камера готова<br>FPS: ${currentFps}${ptStatus}`;
         }
       }
 
-      // Линии сетки
       if (points.length === 4) {
         ctx.beginPath();
         ctx.moveTo(points[0].x * canvas.width, points[0].y * canvas.height);
@@ -323,7 +376,6 @@
         ctx.stroke();
       }
 
-      // Точки
       points.forEach((pt, index) => {
         const px = pt.x * canvas.width;
         const py = pt.y * canvas.height;
@@ -341,12 +393,13 @@
         ctx.fillText(index + 1, px - 4, py + 4);
       });
 
-      // Показываем лупу ТОЛЬКО при перетаскивании или подстройке
-      if (isDragging || showMagnifierTemp) {
+      if ((isDragging || showMagnifierTemp) && activePointIndex !== -1) {
         drawMagnifier(points[activePointIndex]);
       } else {
         magBox.style.display = 'none';
       }
+
+      dpadEl.style.display = activePointIndex !== -1 ? 'grid' : 'none';
 
       requestAnimationFrame(draw);
     }
@@ -367,7 +420,6 @@
 
       magCtx.drawImage(video, sx, sy, sw, sh, 0, 0, 120, 120);
 
-      // Крестик в лупе
       magCtx.beginPath();
       magCtx.strokeStyle = '#ef4444';
       magCtx.lineWidth = 2;
@@ -385,6 +437,7 @@
     }
 
     function moveActivePoint(dxPixels, dyPixels) {
+      if (activePointIndex === -1) return;
       const stepX = dxPixels / canvas.width;
       const stepY = dyPixels / canvas.height;
 
@@ -399,7 +452,8 @@
     document.getElementById('btn-right').addEventListener('click', () => moveActivePoint(1, 0));
 
     activePtLabel.addEventListener('click', () => {
-      activePointIndex = (activePointIndex + 1) % 4;
+      if (activePointIndex === -1) activePointIndex = 0;
+      else activePointIndex = (activePointIndex + 1) % 4;
       activePtLabel.innerText = `T${activePointIndex + 1}`;
       triggerTempMagnifier();
     });
@@ -421,6 +475,7 @@
         const dy = (pt.y - pos.y) * canvas.height;
         return Math.sqrt(dx * dx + dy * dy) < 35;
       });
+      
       if (clickedIdx !== -1) {
         activePointIndex = clickedIdx;
         activePtLabel.innerText = `T${activePointIndex + 1}`;
@@ -472,13 +527,18 @@
 
     saveBtn.addEventListener('click', () => {
       localStorage.setItem('court_calibration_points', JSON.stringify(points));
+      activePointIndex = -1;
+      showMagnifierTemp = false;
       statusEl.innerHTML = "Калибровка сохранена!";
-      setTimeout(() => statusEl.innerHTML = `Камера готова<br>FPS: ${currentFps} | Точка: T${activePointIndex + 1}`, 2000);
+      setTimeout(() => statusEl.innerHTML = `Камера готова<br>FPS: ${currentFps} | Калибровка готова`, 2000);
     });
 
     const saved = localStorage.getItem('court_calibration_points');
     if (saved) {
-      try { points = JSON.parse(saved); } catch (e) {}
+      try { 
+        points = JSON.parse(saved); 
+        activePointIndex = -1;
+      } catch (e) {}
     }
 
     video.addEventListener('loadedmetadata', alignCanvasWithVideo);
