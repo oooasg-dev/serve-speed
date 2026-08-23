@@ -41,16 +41,16 @@
       position: absolute;
       touch-action: none;
     }
-    /* Виртуальная Лупа */
+    /* Виджет Лупы */
     #magnifier {
       position: absolute;
       top: 16px;
       left: 16px;
-      width: 120px;
-      height: 120px;
+      width: 130px;
+      height: 130px;
       border-radius: 50%;
       border: 3px solid #3b82f6;
-      box-shadow: 0 4px 15px rgba(0,0,0,0.5);
+      box-shadow: 0 4px 15px rgba(0,0,0,0.6);
       display: none;
       pointer-events: none;
       z-index: 30;
@@ -61,6 +61,41 @@
       width: 100%;
       height: 100%;
     }
+    /* Джойстик точной подстройки */
+    .dpad-container {
+      position: absolute;
+      bottom: max(80px, env(safe-area-inset-bottom));
+      left: max(16px, env(safe-area-inset-left));
+      display: grid;
+      grid-template-columns: repeat(3, 44px);
+      grid-template-rows: repeat(3, 44px);
+      gap: 4px;
+      z-index: 25;
+      background: rgba(0,0,0,0.5);
+      padding: 6px;
+      border-radius: 12px;
+      backdrop-filter: blur(6px);
+    }
+    .dpad-btn {
+      background: rgba(255, 255, 255, 0.2);
+      color: #fff;
+      border: 1px solid rgba(255,255,255,0.3);
+      border-radius: 8px;
+      font-size: 18px;
+      display: flex;
+      justify-content: center;
+      align-items: center;
+      cursor: pointer;
+    }
+    .dpad-btn:active {
+      background: #2563eb;
+    }
+    .dpad-center {
+      font-size: 12px;
+      font-weight: bold;
+      background: rgba(37, 99, 235, 0.6);
+    }
+    /* Панель управления */
     .controls-overlay {
       position: absolute;
       bottom: max(16px, env(safe-area-inset-bottom));
@@ -69,9 +104,8 @@
       display: flex;
       justify-content: space-between;
       align-items: center;
-      background: rgba(0, 0, 0, 0.7);
+      background: rgba(0, 0, 0, 0.75);
       backdrop-filter: blur(8px);
-      -webkit-backdrop-filter: blur(8px);
       padding: 10px 16px;
       border-radius: 14px;
       z-index: 20;
@@ -82,7 +116,7 @@
       display: flex;
       gap: 8px;
     }
-    button {
+    button.main-btn {
       background: #2563eb;
       color: white;
       border: none;
@@ -119,14 +153,27 @@
     
     <!-- Виджет Лупы -->
     <div id="magnifier">
-      <canvas id="magnifier-canvas" width="120" height="120"></canvas>
+      <canvas id="magnifier-canvas" width="130" height="130"></canvas>
+    </div>
+
+    <!-- Кнопки точной подстройки (Джойстик) -->
+    <div class="dpad-container">
+      <div></div>
+      <div class="dpad-btn" id="btn-up">▲</div>
+      <div></div>
+      <div class="dpad-btn" id="btn-left">◄</div>
+      <div class="dpad-btn dpad-center" id="active-pt-label">T1</div>
+      <div class="dpad-btn" id="btn-right">►</div>
+      <div></div>
+      <div class="dpad-btn" id="btn-down">▼</div>
+      <div></div>
     </div>
 
     <div class="controls-overlay">
       <div id="status">Камера: загрузка...<br>FPS: --</div>
       <div class="btn-group">
-        <button id="save-btn">Сохранить 4 точки</button>
-        <button id="rec-btn">Запись</button>
+        <button class="main-btn" id="save-btn">Сохранить</button>
+        <button class="main-btn" id="rec-btn">Запись</button>
       </div>
     </div>
   </div>
@@ -143,6 +190,7 @@
     const statusEl = document.getElementById('status');
     const saveBtn = document.getElementById('save-btn');
     const recBtn = document.getElementById('rec-btn');
+    const activePtLabel = document.getElementById('active-pt-label');
 
     let points = [
       { x: 0.3, y: 0.3 },
@@ -151,16 +199,14 @@
       { x: 0.2, y: 0.7 }
     ];
 
-    let activePointIndex = -1;
+    let activePointIndex = 0; // По умолчанию выбрана первая точка
     let isDragging = false;
     
-    // Переменные записи
     let mediaRecorder = null;
     let recordedChunks = [];
     let isRecording = false;
     let recStartTime = 0;
 
-    // Подсчет FPS
     let frameCount = 0;
     let lastFpsTime = performance.now();
     let currentFps = 60;
@@ -178,7 +224,6 @@
         });
         video.srcObject = stream;
         
-        // Запуск MediaRecorder
         mediaRecorder = new MediaRecorder(stream, { mimeType: 'video/mp4' });
         mediaRecorder.ondataavailable = (e) => { if (e.data.size > 0) recordedChunks.push(e.data); };
         mediaRecorder.onstop = processRecordedVideo;
@@ -219,7 +264,6 @@
     function draw() {
       ctx.clearRect(0, 0, canvas.width, canvas.height);
 
-      // Считаем реальный FPS
       frameCount++;
       const now = performance.now();
       if (now - lastFpsTime >= 1000) {
@@ -227,11 +271,11 @@
         frameCount = 0;
         lastFpsTime = now;
         if (!isRecording) {
-          statusEl.innerHTML = `Камера готова<br>Разрешение: ${video.videoWidth}x${video.videoHeight} @ ${currentFps} FPS`;
+          statusEl.innerHTML = `Камера готова<br>FPS: ${currentFps} | Точка: T${activePointIndex + 1}`;
         }
       }
 
-      // Контур площадки
+      // Отрисовка сетки
       if (points.length === 4) {
         ctx.beginPath();
         ctx.moveTo(points[0].x * canvas.width, points[0].y * canvas.height);
@@ -246,7 +290,7 @@
         ctx.stroke();
       }
 
-      // Маркеры
+      // Маркеры точек
       points.forEach((pt, index) => {
         const px = pt.x * canvas.width;
         const py = pt.y * canvas.height;
@@ -264,40 +308,57 @@
         ctx.fillText(index + 1, px - 4, py + 4);
       });
 
-      // Отрисовка лупы при перетаскивании
-      if (isDragging && activePointIndex !== -1) {
-        drawMagnifier(points[activePointIndex]);
-      }
+      // Показ лупы при активности
+      drawMagnifier(points[activePointIndex]);
 
       requestAnimationFrame(draw);
     }
 
-    // Отрисовка виртуальной Лупы
     function drawMagnifier(point) {
       magBox.style.display = 'block';
       
       const px = point.x * canvas.width;
       const py = point.y * canvas.height;
 
-      magCtx.clearRect(0, 0, 120, 120);
+      magCtx.clearRect(0, 0, 130, 130);
       
-      // Масштабируем видео в лупе (3x зум)
-      const zoom = 3;
-      const sw = 120 / zoom;
-      const sh = 120 / zoom;
+      const zoom = 4; // Увеличенный зум 4x
+      const sw = 130 / zoom;
+      const sh = 130 / zoom;
       const sx = (px * (video.videoWidth / canvas.width)) - sw / 2;
       const sy = (py * (video.videoHeight / canvas.height)) - sh / 2;
 
-      magCtx.drawImage(video, sx, sy, sw, sh, 0, 0, 120, 120);
+      magCtx.drawImage(video, sx, sy, sw, sh, 0, 0, 130, 130);
 
-      // Красный крестик в центре лупы
+      // Крестик точно по центру
       magCtx.beginPath();
       magCtx.strokeStyle = '#ef4444';
       magCtx.lineWidth = 2;
-      magCtx.moveTo(60, 40); magCtx.lineTo(60, 80);
-      magCtx.moveTo(40, 60); magCtx.lineTo(80, 60);
+      magCtx.moveTo(65, 45); magCtx.lineTo(65, 85);
+      magCtx.moveTo(45, 65); magCtx.lineTo(85, 65);
       magCtx.stroke();
     }
+
+    // Сдвиг точки с клавиатуры/джойстика на 1 пиксель
+    function moveActivePoint(dxPixels, dyPixels) {
+      const stepX = dxPixels / canvas.width;
+      const stepY = dyPixels / canvas.height;
+
+      points[activePointIndex].x = Math.max(0, Math.min(1, points[activePointIndex].x + stepX));
+      points[activePointIndex].y = Math.max(0, Math.min(1, points[activePointIndex].y + stepY));
+    }
+
+    // Назначение событий на джойстик
+    document.getElementById('btn-up').addEventListener('click', () => moveActivePoint(0, -1));
+    document.getElementById('btn-down').addEventListener('click', () => moveActivePoint(0, 1));
+    document.getElementById('btn-left').addEventListener('click', () => moveActivePoint(-1, 0));
+    document.getElementById('btn-right').addEventListener('click', () => moveActivePoint(1, 0));
+
+    // Переключение активной точки по клику на центр джойстика
+    activePtLabel.addEventListener('click', () => {
+      activePointIndex = (activePointIndex + 1) % 4;
+      activePtLabel.innerText = `T${activePointIndex + 1}`;
+    });
 
     function getEventPos(e) {
       const rect = canvas.getBoundingClientRect();
@@ -311,12 +372,14 @@
 
     function handleStart(e) {
       const pos = getEventPos(e);
-      activePointIndex = points.findIndex(pt => {
+      const clickedIdx = points.findIndex(pt => {
         const dx = (pt.x - pos.x) * canvas.width;
         const dy = (pt.y - pos.y) * canvas.height;
         return Math.sqrt(dx * dx + dy * dy) < 35;
       });
-      if (activePointIndex !== -1) {
+      if (clickedIdx !== -1) {
+        activePointIndex = clickedIdx;
+        activePtLabel.innerText = `T${activePointIndex + 1}`;
         isDragging = true;
       }
     }
@@ -331,8 +394,6 @@
 
     function handleEnd() {
       isDragging = false;
-      activePointIndex = -1;
-      magBox.style.display = 'none';
     }
 
     canvas.addEventListener('mousedown', handleStart);
@@ -343,7 +404,7 @@
     canvas.addEventListener('touchmove', handleMove);
     canvas.addEventListener('touchend', handleEnd);
 
-    // Логика Записи
+    // Запись
     recBtn.addEventListener('click', () => {
       if (!isRecording) {
         recordedChunks = [];
@@ -363,14 +424,13 @@
 
     function processRecordedVideo() {
       const duration = ((performance.now() - recStartTime) / 1000).toFixed(1);
-      const blob = new Blob(recordedChunks, { type: 'video/mp4' });
-      statusEl.innerHTML = `Записано: ${duration} сек.<br>Готово к математическому анализу!`;
+      statusEl.innerHTML = `Записано: ${duration} сек.<br>Готово к расчету!`;
     }
 
     saveBtn.addEventListener('click', () => {
       localStorage.setItem('court_calibration_points', JSON.stringify(points));
-      statusEl.innerHTML = "Точки калибровки сохранены!";
-      setTimeout(() => statusEl.innerHTML = `Камера готова<br>FPS: ${currentFps}`, 2000);
+      statusEl.innerHTML = "Калибровка сохранена!";
+      setTimeout(() => statusEl.innerHTML = `Камера готова<br>FPS: ${currentFps} | Точка: T${activePointIndex + 1}`, 2000);
     });
 
     const saved = localStorage.getItem('court_calibration_points');
