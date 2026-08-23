@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
   <meta name="apple-mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
-  <title>Волейбол: Калибровка</title>
+  <title>Волейбол: Трекер скорости</title>
   <style>
     * {
       box-sizing: border-box;
@@ -41,6 +41,26 @@
       position: absolute;
       touch-action: none;
     }
+    /* Виртуальная Лупа */
+    #magnifier {
+      position: absolute;
+      top: 16px;
+      left: 16px;
+      width: 120px;
+      height: 120px;
+      border-radius: 50%;
+      border: 3px solid #3b82f6;
+      box-shadow: 0 4px 15px rgba(0,0,0,0.5);
+      display: none;
+      pointer-events: none;
+      z-index: 30;
+      background: #000;
+      overflow: hidden;
+    }
+    #magnifier-canvas {
+      width: 100%;
+      height: 100%;
+    }
     .controls-overlay {
       position: absolute;
       bottom: max(16px, env(safe-area-inset-bottom));
@@ -49,30 +69,45 @@
       display: flex;
       justify-content: space-between;
       align-items: center;
-      background: rgba(0, 0, 0, 0.65);
+      background: rgba(0, 0, 0, 0.7);
       backdrop-filter: blur(8px);
       -webkit-backdrop-filter: blur(8px);
       padding: 10px 16px;
-      border-radius: 12px;
+      border-radius: 14px;
       z-index: 20;
-      border: 1px solid rgba(255, 255, 255, 0.1);
+      border: 1px solid rgba(255, 255, 255, 0.15);
+      gap: 12px;
+    }
+    .btn-group {
+      display: flex;
+      gap: 8px;
     }
     button {
       background: #2563eb;
       color: white;
       border: none;
-      padding: 10px 16px;
-      font-size: 14px;
+      padding: 10px 14px;
+      font-size: 13px;
       font-weight: 600;
       border-radius: 8px;
       cursor: pointer;
     }
-    button:active {
-      background: #1d4ed8;
+    button#rec-btn {
+      background: #ef4444;
+    }
+    button#rec-btn.recording {
+      background: #22c55e;
+      animation: pulse 1.5s infinite;
+    }
+    @keyframes pulse {
+      0% { opacity: 1; }
+      50% { opacity: 0.6; }
+      100% { opacity: 1; }
     }
     #status {
-      font-size: 13px;
+      font-size: 12px;
       color: #e5e7eb;
+      line-height: 1.3;
     }
   </style>
 </head>
@@ -82,9 +117,17 @@
     <video id="webcam" autoplay playsinline muted></video>
     <canvas id="overlay"></canvas>
     
+    <!-- Виджет Лупы -->
+    <div id="magnifier">
+      <canvas id="magnifier-canvas" width="120" height="120"></canvas>
+    </div>
+
     <div class="controls-overlay">
-      <div id="status">Загрузка...</div>
-      <button id="save-btn">Сохранить 4 точки</button>
+      <div id="status">Камера: загрузка...<br>FPS: --</div>
+      <div class="btn-group">
+        <button id="save-btn">Сохранить 4 точки</button>
+        <button id="rec-btn">Запись</button>
+      </div>
     </div>
   </div>
 
@@ -92,8 +135,14 @@
     const video = document.getElementById('webcam');
     const canvas = document.getElementById('overlay');
     const ctx = canvas.getContext('2d');
+    
+    const magBox = document.getElementById('magnifier');
+    const magCanvas = document.getElementById('magnifier-canvas');
+    const magCtx = magCanvas.getContext('2d');
+
     const statusEl = document.getElementById('status');
     const saveBtn = document.getElementById('save-btn');
+    const recBtn = document.getElementById('rec-btn');
 
     let points = [
       { x: 0.3, y: 0.3 },
@@ -104,6 +153,17 @@
 
     let activePointIndex = -1;
     let isDragging = false;
+    
+    // Переменные записи
+    let mediaRecorder = null;
+    let recordedChunks = [];
+    let isRecording = false;
+    let recStartTime = 0;
+
+    // Подсчет FPS
+    let frameCount = 0;
+    let lastFpsTime = performance.now();
+    let currentFps = 60;
 
     async function startCamera() {
       try {
@@ -111,14 +171,20 @@
           video: {
             facingMode: { ideal: "environment" },
             width: { ideal: 1920 },
-            height: { ideal: 1080 }
+            height: { ideal: 1080 },
+            frameRate: { ideal: 60 }
           },
           audio: false
         });
         video.srcObject = stream;
-        statusEl.innerText = "Камера готова";
+        
+        // Запуск MediaRecorder
+        mediaRecorder = new MediaRecorder(stream, { mimeType: 'video/mp4' });
+        mediaRecorder.ondataavailable = (e) => { if (e.data.size > 0) recordedChunks.push(e.data); };
+        mediaRecorder.onstop = processRecordedVideo;
+
       } catch (err) {
-        statusEl.innerText = "Ошибка: " + err.message;
+        statusEl.innerHTML = "Ошибка: " + err.message;
       }
     }
 
@@ -153,6 +219,19 @@
     function draw() {
       ctx.clearRect(0, 0, canvas.width, canvas.height);
 
+      // Считаем реальный FPS
+      frameCount++;
+      const now = performance.now();
+      if (now - lastFpsTime >= 1000) {
+        currentFps = Math.round((frameCount * 1000) / (now - lastFpsTime));
+        frameCount = 0;
+        lastFpsTime = now;
+        if (!isRecording) {
+          statusEl.innerHTML = `Камера готова<br>Разрешение: ${video.videoWidth}x${video.videoHeight} @ ${currentFps} FPS`;
+        }
+      }
+
+      // Контур площадки
       if (points.length === 4) {
         ctx.beginPath();
         ctx.moveTo(points[0].x * canvas.width, points[0].y * canvas.height);
@@ -167,6 +246,7 @@
         ctx.stroke();
       }
 
+      // Маркеры
       points.forEach((pt, index) => {
         const px = pt.x * canvas.width;
         const py = pt.y * canvas.height;
@@ -183,6 +263,40 @@
         ctx.font = 'bold 12px sans-serif';
         ctx.fillText(index + 1, px - 4, py + 4);
       });
+
+      // Отрисовка лупы при перетаскивании
+      if (isDragging && activePointIndex !== -1) {
+        drawMagnifier(points[activePointIndex]);
+      }
+
+      requestAnimationFrame(draw);
+    }
+
+    // Отрисовка виртуальной Лупы
+    function drawMagnifier(point) {
+      magBox.style.display = 'block';
+      
+      const px = point.x * canvas.width;
+      const py = point.y * canvas.height;
+
+      magCtx.clearRect(0, 0, 120, 120);
+      
+      // Масштабируем видео в лупе (3x зум)
+      const zoom = 3;
+      const sw = 120 / zoom;
+      const sh = 120 / zoom;
+      const sx = (px * (video.videoWidth / canvas.width)) - sw / 2;
+      const sy = (py * (video.videoHeight / canvas.height)) - sh / 2;
+
+      magCtx.drawImage(video, sx, sy, sw, sh, 0, 0, 120, 120);
+
+      // Красный крестик в центре лупы
+      magCtx.beginPath();
+      magCtx.strokeStyle = '#ef4444';
+      magCtx.lineWidth = 2;
+      magCtx.moveTo(60, 40); magCtx.lineTo(60, 80);
+      magCtx.moveTo(40, 60); magCtx.lineTo(80, 60);
+      magCtx.stroke();
     }
 
     function getEventPos(e) {
@@ -204,7 +318,6 @@
       });
       if (activePointIndex !== -1) {
         isDragging = true;
-        draw();
       }
     }
 
@@ -214,13 +327,12 @@
       const pos = getEventPos(e);
       points[activePointIndex].x = Math.max(0, Math.min(1, pos.x));
       points[activePointIndex].y = Math.max(0, Math.min(1, pos.y));
-      draw();
     }
 
     function handleEnd() {
       isDragging = false;
       activePointIndex = -1;
-      draw();
+      magBox.style.display = 'none';
     }
 
     canvas.addEventListener('mousedown', handleStart);
@@ -231,10 +343,34 @@
     canvas.addEventListener('touchmove', handleMove);
     canvas.addEventListener('touchend', handleEnd);
 
+    // Логика Записи
+    recBtn.addEventListener('click', () => {
+      if (!isRecording) {
+        recordedChunks = [];
+        mediaRecorder.start();
+        isRecording = true;
+        recStartTime = performance.now();
+        recBtn.innerText = "Стоп";
+        recBtn.classList.add('recording');
+        statusEl.innerHTML = "Запись подачи...<br>Нажмите Стоп после приема";
+      } else {
+        mediaRecorder.stop();
+        isRecording = false;
+        recBtn.innerText = "Запись";
+        recBtn.classList.remove('recording');
+      }
+    });
+
+    function processRecordedVideo() {
+      const duration = ((performance.now() - recStartTime) / 1000).toFixed(1);
+      const blob = new Blob(recordedChunks, { type: 'video/mp4' });
+      statusEl.innerHTML = `Записано: ${duration} сек.<br>Готово к математическому анализу!`;
+    }
+
     saveBtn.addEventListener('click', () => {
       localStorage.setItem('court_calibration_points', JSON.stringify(points));
-      statusEl.innerText = "Точки сохранены!";
-      setTimeout(() => statusEl.innerText = "Камера готова", 2000);
+      statusEl.innerHTML = "Точки калибровки сохранены!";
+      setTimeout(() => statusEl.innerHTML = `Камера готова<br>FPS: ${currentFps}`, 2000);
     });
 
     const saved = localStorage.getItem('court_calibration_points');
